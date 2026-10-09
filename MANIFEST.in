@@ -1,0 +1,2 @@
+include get_nvd_data_from_online.py
+recursive-include tests *.py
