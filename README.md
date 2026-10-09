@@ -1,6 +1,33 @@
-# get_nvd_data_from_online_to
+![NVD Export — vulnerability data flowing into files and databases](assets/readme-banner.png)
 
-Download National Vulnerability Database (NVD) CVEs and store them where you choose: **CSV, JSON, JSONL, SQLite, PostgreSQL, or MySQL**.
+<h1 align="center">NVD Export</h1>
+
+<p align="center">
+  Download vulnerability data. Choose where it lives.<br>
+  <strong>CSV · JSON · JSONL · SQLite · PostgreSQL · MySQL</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/quentinmayo/get_nvd_data_from_online_to/actions/workflows/ci.yml"><img src="https://github.com/quentinmayo/get_nvd_data_from_online_to/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="#install"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10 or newer"></a>
+  <a href="https://nvd.nist.gov/developers/vulnerabilities"><img src="https://img.shields.io/badge/NVD_API-2.0-00A6C7" alt="NVD API 2.0"></a>
+</p>
+
+<p align="center">
+  <a href="#install">Quick start</a> ·
+  <a href="#choose-where-data-is-stored">Destinations</a> ·
+  <a href="#select-records-and-fields">Filtering</a> ·
+  <a href="#data-schema">Data schema</a> ·
+  <a href="#development">Contributing</a>
+</p>
+
+---
+
+**`get_nvd_data_from_online_to`** turns National Vulnerability Database (NVD) CVEs into useful files and queryable databases. Pick a destination, filter the records you need, and export with one command.
+
+- **Your data, your destination.** Local folders, mounted drives, or your own database server.
+- **Full records, useful summaries.** Readable CVE fields alongside the complete source JSON.
+- **Built for repeat imports.** Streaming downloads, automatic retries, and database updates without duplicate CVEs.
 
 Version 2 replaces the original XML-to-CSV script with the [NVD CVE API 2.0](https://nvd.nist.gov/developers/vulnerabilities), a packaged Python CLI, streamed exports, and repeatable database imports. The former repository name was `get_nvd_data_from_online_to_csv`.
 
