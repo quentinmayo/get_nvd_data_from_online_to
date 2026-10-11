@@ -11,6 +11,8 @@ from typing import Any
 
 import requests
 
+from . import __version__
+
 API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 LOG = logging.getLogger(__name__)
 
@@ -43,7 +45,7 @@ class NvdClient:
             raise ValueError("Page size must be between 1 and 2000")
         self.session = session if session is not None else requests.Session()
         self.session.headers.update(
-            {"User-Agent": "nvd-export/2.0.0", "Accept": "application/json"}
+            {"User-Agent": f"nvd-export/{__version__}", "Accept": "application/json"}
         )
         if api_key:
             self.session.headers["apiKey"] = api_key
@@ -101,7 +103,16 @@ class NvdClient:
         raise NvdError("NVD request failed")
 
     def iter_cves(self, params: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
-        start = 0
+        for items, _, _ in self.iter_pages(params):
+            yield from items
+
+    def iter_pages(
+        self, params: dict[str, Any] | None = None, *, start_index: int = 0
+    ) -> Iterator[tuple[list[dict[str, Any]], int, bool]]:
+        """Yield complete validated pages, next offset, and whether the query is complete."""
+        if start_index < 0:
+            raise ValueError("Start index must be nonnegative")
+        start = start_index
         while True:
             payload = self._request(
                 {**(params or {}), "startIndex": start, "resultsPerPage": self.page_size}
@@ -118,10 +129,12 @@ class NvdClient:
             if not items and start < total:
                 raise NvdError("NVD returned an empty page before all results were downloaded")
             LOG.info("Downloaded %d/%d CVEs for current query", start + len(items), total)
+            cves = []
             for item in items:
                 if not isinstance(item, dict) or not isinstance(item.get("cve"), dict):
                     raise NvdError("NVD returned an invalid CVE record")
-                yield item["cve"]
+                cves.append(item["cve"])
             start += len(items)
+            yield cves, start, start >= total
             if start >= total:
                 return

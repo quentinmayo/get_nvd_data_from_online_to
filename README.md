@@ -15,6 +15,8 @@
 
 <p align="center">
   <a href="#install">Quick start</a> ·
+  <a href="#automatic-database-sync">Sync</a> ·
+  <a href="#saved-configuration">Configuration</a> ·
   <a href="#choose-where-data-is-stored">Destinations</a> ·
   <a href="#select-records-and-fields">Filtering</a> ·
   <a href="#data-schema">Data schema</a> ·
@@ -51,6 +53,83 @@ nvd-export --cve-id CVE-2021-44228 --output ./data/example.csv
 ```
 
 You can also use `python -m nvd_exporter` or the original `python get_nvd_data_from_online.py` entry point after installing dependencies.
+
+## Automatic database sync
+
+**Configure once, then run one command to keep your NVD database current.**
+
+```sh
+nvd-export --init-config nvd.toml
+nvd-export --config nvd.toml
+```
+
+The generated configuration enables SQLite sync and stores data in `data/nvd.sqlite3` beside the configuration file. Edit the destination before the first run if you want another location. The first run downloads the **entire CVE collection**, which can take a while; an NVD API key speeds up requests. Every later run fetches CVEs modified since the last successful update.
+
+Run the same command whenever you want a refresh. Each invocation syncs once and exits; it does not install a background service or scheduler. A task scheduler can invoke that command periodically. Prefer intervals of at least two hours and one worker per destination table.
+
+You can also sync without a configuration file:
+
+```sh
+nvd-export --sync --format sqlite --output ./data/nvd.sqlite3
+
+# With NVD_DATABASE_URL set to your PostgreSQL or MySQL connection:
+nvd-export --sync --format database
+```
+
+Sync works with SQLite, PostgreSQL, and MySQL. It maintains the **complete CVE collection**: keyword, CVE-ID, local regex, field selection, limits, and manual date ranges are rejected in sync mode. Use `--no-sync` for a filtered one-off export. Existing databases made by version 2.0 are supported; their first sync performs a full upsert to establish its checkpoint.
+
+### Recovery and checkpoints
+
+- **Full import:** each API page and its next offset commit together. An interrupted run resumes from the last committed page.
+- **Incremental updates:** fixed modified-date windows cover the time since the last completed window, with a five-minute overlap by default. Gaps longer than 120 days are split automatically.
+- **Interrupted updates:** the unfinished window restarts at its first page. Its result set can change while offline, so a stored page offset would be unsafe. Existing rows are updated without duplicates.
+- **Atomic progress:** page records and progress live in one database transaction. A failed write rolls back both. `--batch-size` controls SQL statement batches inside that transaction; sync commits once per API page.
+- **Empty results:** a successfully checked empty window advances the checkpoint too.
+- **Concurrent runs:** a database lease prevents two syncs from updating the same table. It renews with every committed page and expires after 15 minutes without renewal. A crashed process may require waiting for expiry; an expired worker cannot commit further pages. Keep clocks synchronized when running from different machines. Avoid concurrent ordinary exports or manual edits to the same destination.
+
+Checkpoints are stored in the reserved `_nvd_export_sync_state` table, keyed by destination table. Back up and restore it **together with your CVE table**. Credentials are not stored in checkpoints. Database permissions must allow table creation, SELECT, INSERT, and UPDATE. SQLite must use a persistent file.
+
+Customize the overlap with `--sync-overlap 600` (seconds, from 1 to 86400). NVD is a live API, not a transactional snapshot; overlap and a catch-up pass after the full import reduce timing gaps but cannot guarantee recovery of arbitrarily delayed upstream updates. Periodic full reconciliation is available:
+
+```sh
+nvd-export --config nvd.toml --reset-sync
+```
+
+`--reset-sync` restarts the full import while preserving existing CVE rows. It also recovers invalid checkpoints. If the CVE table is missing, sync recreates it and starts a full import automatically. If you manually empty or partially restore that table, use `--reset-sync`. Rejected CVEs retain their status; sync does not delete local rows absent from a response. Progress counts include records replayed during overlap.
+
+## Saved configuration
+
+Create a starter file with `--init-config PATH` (existing files are never overwritten), or copy [examples/nvd.toml](examples/nvd.toml):
+
+```toml
+[export]
+format = "sqlite"
+output = "data/nvd.sqlite3"
+table = "nvd_cves"
+sync = true
+page_size = 2000
+batch_size = 500
+sync_overlap = 300
+```
+
+Run it with `nvd-export --config /path/to/nvd.toml`, or set `NVD_CONFIG` to that path. No configuration file is loaded implicitly. Paths specified inside the file, including relative SQLite URLs, resolve **beside the config file**; paths passed through CLI options or environment variables resolve from the working directory.
+
+Precedence, highest first: **command-line options → environment variables → configuration file → built-in defaults**. CLI names use underscores in TOML (`database_url`, `published_start`, `page_size`). Unknown settings and incorrect types fail before downloading. Use `--no-sync` or `--no-quiet` to override enabled booleans; CLI `--filter` entries replace the configured filter list.
+
+For server databases, remove `output`, set `format = "database"`, and provide `NVD_DATABASE_URL`. Prefer `NVD_API_KEY` and `NVD_DATABASE_URL` environment variables for credentials; `api_key` and `database_url` are also accepted in a private config file. The starter is created with owner-only permissions on POSIX systems. `--reset-sync` is intentionally a command-line-only action.
+
+One-off exports can save their filters too:
+
+```toml
+[export]
+format = "csv"
+output = "reports/apache.csv"
+sync = false
+keyword = "apache"
+filter = ["cvss_severity=^(HIGH|CRITICAL)$"]
+fields = "cve_id,published,cvss_score,description"
+limit = 100
+```
 
 ## Choose where data is stored
 
@@ -100,6 +179,7 @@ The default table is `nvd_cves`; change it with `--table vulnerability_archive`.
 
 | Variable | Purpose |
 | --- | --- |
+| `NVD_CONFIG` | Explicit path to an `[export]` TOML configuration |
 | `NVD_API_KEY` | Optional NVD API key |
 | `NVD_FORMAT` | Default output format; otherwise `csv` |
 | `NVD_OUTPUT` | Default destination file path |
@@ -169,13 +249,13 @@ The flattened `cpes` list is a convenience summary. Use `raw.configurations` to 
 
 - Downloads are paginated and processed incrementally, without loading the whole collection into memory.
 - CSV/JSON/JSONL exports replace the destination only after a successful complete run. Failed or interrupted runs remove their temporary file and preserve any previous export. A successful empty export replaces the file with an empty result. Force-killing a process may leave a hidden `.tmp` file beside the destination.
-- Databases upsert by `cve_id`: importing a CVE again replaces that row with the downloaded record. Rows outside the selected query remain. Rerunning a failed query is safe from duplicate rows; no automatic resume cursor is maintained.
-- Database writes commit in batches of 500 rows (`--batch-size`). Earlier batches remain if a later download or write fails; the current transaction rolls back on a write error. Existing tables must have this schema; automatic schema migrations are not provided.
+- Databases upsert by `cve_id`: importing a CVE again replaces that row with the downloaded record. Rows outside the selected query remain. Ordinary exports can be rerun without duplicate rows. `--sync` adds automatic checkpoints and recovery as described above.
+- Ordinary database exports commit in batches of 500 rows (`--batch-size`); sync commits each API page atomically with its checkpoint. Earlier batches remain if a later download or write fails; the current transaction rolls back on a write error. Existing tables must have this schema; automatic schema migrations are not provided.
 - HTTPS certificate verification stays enabled. Network failures, HTTP 429, and HTTP 5xx receive up to five retries with backoff and `Retry-After` support. Other HTTP errors fail with a nonzero exit status.
 - Requests are spaced at least 6.1 seconds apart without a key, or 0.65 seconds with one. Multiple processes sharing an API key/IP must coordinate their request rate. See [NVD API guidance](https://nvd.nist.gov/developers/start-here) and [request an API key](https://nvd.nist.gov/developers/request-an-api-key).
 - Tune `--timeout` (default 60 seconds), `--retries` (5), and `--page-size` (2000). `--quiet` hides progress. Exit codes: `0` success, `1` export failure, `2` invalid command arguments, `130` interrupted.
 
-For recurring updates, track your own last successful modified-date window and overlap it slightly on the next run. The NVD is a live dataset, so a long export is not a transactional snapshot; run a modified-date refresh after a full import. Rejected CVEs are retained with their NVD status.
+Use `--sync` for recurring updates: it tracks completed modified-date windows, overlaps updates, and catches up after a full import. Manual date ranges remain available for one-off exports. Rejected CVEs are retained with their NVD status.
 
 ## Migrating from version 1
 
@@ -208,7 +288,7 @@ pytest
 python -m build
 ```
 
-Unit tests use local fixtures and mocked HTTP. Server integration tests skip unless `TEST_POSTGRES_URL` and/or `TEST_MYSQL_URL` point to disposable test databases; they create and remove uniquely named tables. CI runs Python 3.10, 3.12, and 3.14 tests plus PostgreSQL 17 and MySQL 8.4 integration tests.
+Unit tests use local fixtures and mocked HTTP. Server integration tests skip unless `TEST_POSTGRES_URL` and/or `TEST_MYSQL_URL` point to disposable test databases; they create and remove uniquely named CVE tables and their checkpoint rows. Tests cover interrupted imports, replay, atomic rollback, lease recovery, and configuration precedence. CI runs Python 3.10, 3.12, and 3.14 tests plus PostgreSQL 17 and MySQL 8.4 integration tests.
 
 To add another destination, implement an iterator-consuming writer in `nvd_exporter/storage.py`, expose its options in the CLI, and add persistence/failure tests. Do not assume all SQLAlchemy dialects support the same upsert syntax.
 

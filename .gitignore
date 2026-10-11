@@ -13,3 +13,5 @@ cve_information.csv
 *.sqlite3
 *.db
 .DS_Store
+nvd.toml
+!examples/nvd.toml

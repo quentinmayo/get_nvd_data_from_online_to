@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "get_nvd_data_from_online_to"
-version = "2.0.0"
+version = "2.1.0"
 description = "Export NVD vulnerability data to files, SQLite, PostgreSQL, or MySQL"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "Quentin Mayo"}]
-dependencies = ["requests>=2.32.4,<3", "SQLAlchemy>=2.0.41,<3"]
+dependencies = ["requests>=2.32.4,<3", "SQLAlchemy>=2.0.41,<3", "tomli>=2,<3; python_version < '3.11'"]
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.2,<4"]

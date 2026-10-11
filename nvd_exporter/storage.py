@@ -21,6 +21,8 @@ from sqlalchemy.engine import URL, make_url
 
 from .records import CSV_FIELDS, FIELDS
 
+STATE_TABLE = "_nvd_export_sync_state"
+
 
 def cell(value: Any) -> Any:
     if isinstance(value, (dict, list)):
@@ -96,6 +98,8 @@ def database_url(value: str | URL) -> URL:
 
 
 def cve_table(name: str, metadata: MetaData) -> Table:
+    if name.lower() == STATE_TABLE:
+        raise ValueError("This table name is reserved for sync checkpoints")
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", name):
         raise ValueError(
             "Table name must be 1–63 letters, digits, or underscores; "

@@ -9,7 +9,7 @@ from nvd_exporter.cli import main, parse_date, parser, queries
 
 @pytest.fixture(autouse=True)
 def clean_environment(monkeypatch):
-    for name in ("NVD_FORMAT", "NVD_OUTPUT", "NVD_DATABASE_URL", "NVD_API_KEY"):
+    for name in ("NVD_CONFIG", "NVD_FORMAT", "NVD_OUTPUT", "NVD_DATABASE_URL", "NVD_API_KEY"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -53,6 +53,11 @@ def test_sqlite_cli(tmp_path, api):
 @pytest.mark.parametrize(
     "args",
     [
+        ["--sync"],
+        ["--reset-sync"],
+        ["--sync", "--format", "sqlite", "--limit", "1"],
+        ["--sync", "--format", "sqlite", "--keyword", "apache"],
+        ["--sync-overlap", "0"],
         ["--limit", "0"],
         ["--page-size", "2001"],
         ["--timeout", "nan"],

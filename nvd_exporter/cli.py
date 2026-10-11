@@ -19,8 +19,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from . import __version__
 from .client import NvdClient, NvdError, date_windows
+from .config import ENVIRONMENT, load_config, write_template
 from .records import FIELDS, normalize
 from .storage import cell, write_database, write_file
+from .sync import SyncError, sync_database
 
 LOG = logging.getLogger(__name__)
 FORMATS = ("csv", "json", "jsonl", "sqlite", "database")
@@ -29,6 +31,29 @@ FORMATS = ("csv", "json", "jsonl", "sqlite", "database")
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description="Export NVD API 2.0 CVEs to a file or database.",
+    )
+    result.add_argument(
+        "--config", default=os.getenv("NVD_CONFIG"), help="Read an [export] TOML file"
+    )
+    result.add_argument(
+        "--init-config", metavar="PATH", help="Create a starter configuration and exit"
+    )
+    result.add_argument(
+        "--sync",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Maintain a complete CVE database with durable incremental updates",
+    )
+    result.add_argument(
+        "--reset-sync",
+        action="store_true",
+        help="Restart the full sync without deleting existing CVEs",
+    )
+    result.add_argument(
+        "--sync-overlap",
+        type=int,
+        default=300,
+        help="Seconds to replay between updates (1–86400; default 300)",
     )
     result.add_argument("--version", action="version", version=__version__)
     result.add_argument("--format", choices=FORMATS, default=os.getenv("NVD_FORMAT", "csv"))
@@ -68,7 +93,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--retries", type=int, default=5, help="Retries for network/429/5xx failures"
     )
-    result.add_argument("--quiet", action="store_true", help="Only print errors")
+    result.add_argument(
+        "--quiet", action=argparse.BooleanOptionalAction, default=False, help="Only print errors"
+    )
     return result
 
 
@@ -132,7 +159,33 @@ def filters(values: Sequence[str]) -> list[tuple[str, re.Pattern[str]]]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     argument_parser = parser()
-    args = argument_parser.parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    preliminary = argparse.ArgumentParser(add_help=False)
+    preliminary.add_argument("--config", default=os.getenv("NVD_CONFIG"))
+    preliminary.add_argument("--init-config")
+    known, _ = preliminary.parse_known_args(arguments)
+    try:
+        if known.config and not known.init_config:
+            argument_parser.set_defaults(**load_config(Path(known.config)))
+        argument_parser.set_defaults(
+            **{field: os.environ[name] for name, field in ENVIRONMENT.items() if name in os.environ}
+        )
+        if any(arg == "--filter" or arg.startswith("--filter=") for arg in arguments):
+            argument_parser.set_defaults(filter=[])
+    except ValueError as error:
+        argument_parser.error(str(error))
+    args = argument_parser.parse_args(arguments)
+    if args.init_config:
+        try:
+            write_template(Path(args.init_config))
+        except OSError:
+            print(
+                "Error: cannot create configuration; file may already exist or be unwritable",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"Created {args.init_config}. Run: nvd-export --config {args.init_config}")
+        return 0
     try:
         if args.format not in FORMATS:
             raise ValueError("NVD_FORMAT must be csv, json, jsonl, sqlite, or database")
@@ -144,6 +197,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("--batch-size must be positive and --retries must be nonnegative")
         if not math.isfinite(args.timeout) or args.timeout <= 0:
             raise ValueError("--timeout must be a positive finite number")
+        if not 1 <= args.sync_overlap <= 86400:
+            raise ValueError("--sync-overlap must be between 1 and 86400 seconds")
+        if args.reset_sync and not args.sync:
+            raise ValueError("--reset-sync requires --sync")
+        if args.sync:
+            if args.format not in {"sqlite", "database"}:
+                raise ValueError("--sync requires --format sqlite or database")
+            if any(
+                (
+                    args.cve_id,
+                    args.keyword,
+                    args.filter,
+                    args.fields,
+                    args.limit,
+                    args.published_start,
+                    args.published_end,
+                    args.modified_start,
+                    args.modified_end,
+                )
+            ):
+                raise ValueError(
+                    "--sync maintains a complete database; filters, fields, limits, "
+                    "and manual date ranges require --no-sync"
+                )
         query_list = queries(args)
         local_filters = filters(args.filter)
         fields = [field.strip() for field in args.fields.split(",")] if args.fields else None
@@ -183,7 +260,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         selected = islice(records(), args.limit) if args.limit else records()
-        if args.format == "database":
+        if args.sync:
+            url = (
+                args.database_url
+                if args.format == "database"
+                else URL.create(
+                    "sqlite",
+                    database=str(
+                        Path(args.output or "cve_information.sqlite3").expanduser().absolute()
+                    ),
+                )
+            )
+            count = sync_database(
+                client,
+                url,
+                args.table,
+                batch_size=args.batch_size,
+                overlap=args.sync_overlap,
+                reset=args.reset_sync,
+            )
+        elif args.format == "database":
             count = write_database(selected, args.database_url, args.table, args.batch_size)
         else:
             suffix = "sqlite3" if args.format == "sqlite" else args.format
@@ -203,7 +299,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    except (NvdError, ValueError, OSError) as error:
+    except (NvdError, SyncError, ValueError, OSError) as error:
         # Never echo connection URLs or API keys supplied by the caller.
         message = str(error)
         for secret in (args.api_key, args.database_url):

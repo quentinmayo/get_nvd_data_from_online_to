@@ -1,0 +1,14 @@
+# Run: nvd-export --config nvd.toml
+# Relative output paths are resolved beside this configuration file.
+[export]
+format = "sqlite"
+output = "data/nvd.sqlite3"
+table = "nvd_cves"
+sync = true
+page_size = 2000
+batch_size = 500
+sync_overlap = 300  # seconds replayed at the start of each update
+
+# For a server database, remove output and set format = "database".
+# Supply the connection via NVD_DATABASE_URL and the API key via NVD_API_KEY.
+# sync = false enables ordinary exports with keyword, filter, fields, or limit.

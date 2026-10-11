@@ -99,3 +99,12 @@ def test_date_windows():
     assert list(date_windows(start, start)) == [(start, start)]
     with pytest.raises(ValueError):
         list(date_windows(end, start))
+
+
+def test_resume_page_offset(monkeypatch, cve):
+    api, session, _ = client(
+        monkeypatch,
+        [response({"startIndex": 10, "totalResults": 11, "vulnerabilities": [{"cve": cve}]})],
+    )
+    assert list(api.iter_pages(start_index=10)) == [([cve], 11, True)]
+    assert session.get.call_args.kwargs["params"]["startIndex"] == 10
